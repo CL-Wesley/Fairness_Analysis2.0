@@ -20,6 +20,11 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import accuracy_score
 
+try:
+    import boto3
+except ImportError:
+    boto3 = None
+
 # --- Import from rewritten fairness_analyzer ---
 from fairness_analyzer import FairnessAnalyzer as CoreFairnessAnalyzer
 
@@ -104,6 +109,11 @@ class LLMBasedAnalysis:
             # Check for env vars
             if not all(os.getenv(k) for k in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]):
                 warnings.warn("AWS credentials not set in environment variables. LLM analysis will be disabled.")
+                self.bedrock_runtime = None
+                return
+
+            if boto3 is None:
+                warnings.warn("boto3 is not installed. LLM analysis will be disabled.")
                 self.bedrock_runtime = None
                 return
 
@@ -226,6 +236,42 @@ class FairnessPipeline:
             raise RuntimeError("Failed to parse CSV. Please check the file's delimiter and format.")
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Failed to download file from {file_url}: {e}")
+
+    def load_model_from_url(self, model_url: str, model_format: str) -> object:
+        """
+        Downloads and loads a model from a URL, prioritizing ONNX and issuing a security warning for pickle.
+        """
+        try:
+            response = requests.get(model_url, timeout=30)
+            response.raise_for_status()
+            model_content = response.content
+            
+            if model_format == 'onnx':
+                if rt is None:
+                    raise HTTPException(status_code=501, detail="ONNX runtime is not installed.")
+                try:
+                    session = rt.InferenceSession(model_content)
+                    return ONNXModelWrapper(session)
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid ONNX file. Error: {e}")
+            elif model_format in ['pkl', 'joblib']:
+                # --- SECURITY FIX: Add explicit warning ---
+                warnings.warn(
+                    "Loading models with pickle or joblib is insecure and can execute arbitrary code. "
+                    "Only load files from a trusted source. Use the ONNX format for better security and reliability.",
+                    UserWarning
+                )
+                try:
+                    model = pickle.loads(model_content) if model_format == 'pkl' else joblib.load(io.BytesIO(model_content))
+                    if not hasattr(model, 'predict'):
+                        raise AttributeError("Model must have a .predict() method.")
+                    return model
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Failed to load pkl/joblib file. Error: {e}")
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported model format '{model_format}'.")
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=400, detail=f"Failed to download model from {model_url}: {e}")
 
     def load_uploaded_model(self, model_file: UploadFile, model_format: str) -> object:
         """

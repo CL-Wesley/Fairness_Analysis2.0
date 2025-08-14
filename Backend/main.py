@@ -4,7 +4,7 @@ FastAPI backend for Fairness Analysis. (V2 - Refactored & Enhanced)
 Orchestrates fairness analysis using the FairnessPipeline class.
 """
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+from fastapi import FastAPI, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pandas as pd
@@ -162,7 +162,7 @@ async def perform_analysis(
     sensitive_feature: str = Form(...),
     current_file_url: Optional[str] = Form(None),
     mitigation_strategy: str = Form("exponentiated_gradient"),
-    model_file: Optional[UploadFile] = File(None),
+    model_file_url: Optional[str] = Form(None, description="URL to model file (e.g., ONNX, PKL)"),
     model_format: str = Form("onnx"),
     pipeline: FairnessPipeline = Depends(get_fairness_pipeline)
 ):
@@ -181,12 +181,12 @@ async def perform_analysis(
         )
         
         # 2. Load or Define Model
-        is_pretrained = model_file is not None
+        is_pretrained = model_file_url is not None
         if is_pretrained:
-            logger.info(f"Loading user-uploaded model (format: {model_format})")
-            model = pipeline.load_uploaded_model(model_file, model_format)
+            logger.info(f"Loading model from URL (format: {model_format})")
+            model = pipeline.load_model_from_url(model_file_url, model_format)
         else:
-            logger.info("No model uploaded. A default RandomForestClassifier will be used for mitigation.")
+            logger.info("No model URL provided. A default RandomForestClassifier will be used for mitigation.")
             model = RandomForestClassifier(random_state=42)
             # We only fit here if it's not a pre-trained model and no mitigation that requires training is used.
             # Mitigation functions will handle their own fitting.
